@@ -1,80 +1,15 @@
 import numpy as np
-from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
-from numpy.linalg import norm
-import numpy as np
-from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.decomposition import TruncatedSVD
+from sklearn.feature_extraction.text import TfidfVectorizer
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from nltk.tokenize import word_tokenize
-from numpy.linalg import norm
 import nltk
-
-
-def svd(X):
-    # Обчислення сингулярного розкладу
-    U, S, VT = np.linalg.svd(X, full_matrices=False)
-    return U, S, VT
-
-
-def get_word_topic(word, terms, U_k):
-    # Знаходимо індекс слова у словнику
-    word_index = list(terms).index(word)
-    if word_index == -1:
-        return -1
-
-    topic_number = -1
-    for i in range(len(U_k[word_index, :])):
-        if topic_number == -1 or abs(U_k[word_index, i]) > abs(U_k[word_index, topic_number]):
-            topic_number = i
-
-    return topic_number
-
-
-def get_topic_top_words(num, terms, count, U_k):
-    return [terms[i] for i in np.argsort(-abs(U_k[:, num]))[:count]]
-
-
-def get_topic_name(num, terms, U_k):
-    return get_topic_top_words(num, terms, 1, U_k)[0]
-
-
-def get_document_topic(doc_number, V_t):
-    # Знаходимо індекс документу у словнику
-
-    topic_number = -1
-    for i in range(len(V_t)):
-        if topic_number == -1 or abs(V_t[i, doc_number]) > abs(V_t[topic_number, doc_number]):
-            topic_number = i
-
-    return topic_number
-
-
-def cosine_similarity(vec1, vec2):
-    return np.dot(vec1, vec2) / (norm(vec1) * norm(vec2))
-
-
-def find_closest_word(word, terms, U_k):
-    word_topic = get_word_topic(word, terms, U_k)
-    max_similarity = -1
-    closest_word = None
-
-    for i, term in enumerate(terms):
-        if term == word:
-            continue
-
-        term_vector = U_k[i, :]
-        similarity = cosine_similarity(word_topic, term_vector)
-
-        if similarity > max_similarity:
-            max_similarity = similarity
-            closest_word = term
-
-    return closest_word
-
+from sklearn.datasets import fetch_20newsgroups
+from sklearn.cluster import KMeans
 
 # Завантажуємо ресурси NLTK
 # nltk.download('punkt')
-# nltk.download('punkt_tab')
 # nltk.download('wordnet')
 # nltk.download('stopwords')
 
@@ -91,48 +26,58 @@ def preprocess_text(text):
     return ' '.join(lemmatizer.lemmatize(word) for word in words if word.isalpha() and word not in stop_words)
 
 
-with open('test.txt', 'r', encoding='utf-8') as file:
-    content = file.read()
+# Завантажуємо документи з набору 20 Newsgroups
+categories = ['rec.sport.baseball', 'comp.graphics', 'talk.politics.guns']
+newsgroups = fetch_20newsgroups(subset='all', categories=categories)
 
-# Розділяємо текст на окремі документи за допомогою подвійного пробілу
-documents = content.split('\n')
+# Розділяємо документи по категоріях, щоб отримати рівномірний розподіл документів
+category_docs = {category: [] for category in categories}
+for doc, target in zip(newsgroups.data, newsgroups.target):
+    category_name = newsgroups.target_names[target]
+    if category_name in category_docs:
+        category_docs[category_name].append(doc)
 
-# print(documents)
+# Переконуємося, що в кожній категорії достатньо документів
+documents_per_category = 100  # Збільшимо кількість документів для кожної категорії для кращої кластеризації
+selected_documents = []
+for category in categories:
+    if len(category_docs[category]) >= documents_per_category:
+        selected_documents.extend(category_docs[category][:documents_per_category])
+    else:
+        print(f"Warning: Not enough documents in category '{category}' (found {len(category_docs[category])})")
+        selected_documents.extend(category_docs[category])
 
 # Обробка документів
-processed_documents = [preprocess_text(doc) for doc in documents]
+processed_documents = [preprocess_text(doc) for doc in selected_documents]
 
 # Створюємо матрицю частот слів з видаленням стоп-слів
 vectorizer = TfidfVectorizer(stop_words='english')  # Використання стандартних англійських стоп-слів
-X = vectorizer.fit_transform(processed_documents).toarray().T  # Транспонуємо матрицю, щоб отримати (слова, документи)
-
-# Виведення результатів
+X = vectorizer.fit_transform(processed_documents)  # Трансформуємо документи у матрицю частот слів
 terms = vectorizer.get_feature_names_out()
 
-# Викликаємо SVD на матриці частот
-U, S, VT = svd(X)
+# Виконуємо SVD для зменшення розмірності
+k = 3  # Кількість тем для отримання
+svd = TruncatedSVD(n_components=k)
+X_reduced = svd.fit_transform(X)
 
-# Вибираємо кількість компонент для зменшення
-k = min(len(documents), 3)  # Залишаємо дві головні теми
+# Виконуємо кластеризацію документів за допомогою KMeans
+n_clusters = 3
+kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+kmeans.fit(X_reduced)
+labels = kmeans.labels_
 
-# Зменшуємо розмірність, залишивши тільки k компонент
-U_k = U[:, :k]
-S_k = np.diag(S[:k])
-VT_k = VT[:k, :]
+# Виводимо результати кластеризації документів
+for i, label in enumerate(labels):
+    print(f"Document {i + 1}: Cluster {label + 1}")
 
-print("VT_k: ", VT_k)
+# Виконуємо кластеризацію слів за допомогою KMeans
+kmeans_words = KMeans(n_clusters=n_clusters, random_state=42)
+kmeans_words.fit(svd.components_.T)
+word_labels = kmeans_words.labels_
 
-# Відновлюємо зменшену матрицю
-X_reduced = np.dot(U_k, np.dot(S_k, VT_k))
-
-for i, doc in enumerate(documents):
-    topic = get_document_topic(i, VT_k)
-    print(f"Document: {i}, Topic: {get_topic_name(topic, terms, U_k)}")
-
-for i in range(k):
-    top10_words = get_topic_top_words(i, terms, 10, U_k)
-    print(f"Topic {i}: {', '.join(top10_words)}")
-
-# for word in terms:
-#     topic = get_word_topic(word, terms, U_k)
-#     print(f"Word: {word}, Topic: {get_topic_name(topic, terms, U_k)}")
+# Виводимо результати кластеризації слів
+for cluster in range(n_clusters):
+    cluster_terms_indices = [i for i, label in enumerate(word_labels) if label == cluster]
+    sorted_indices = sorted(cluster_terms_indices, key=lambda x: -abs(svd.components_[:, x]).sum())
+    top_terms = [terms[index] for index in sorted_indices[:10]]
+    print(f"Word Cluster {cluster + 1}: {', '.join(top_terms)}")
